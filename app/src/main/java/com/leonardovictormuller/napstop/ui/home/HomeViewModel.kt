@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.leonardovictormuller.napstop.di.AppContainer
+import com.leonardovictormuller.napstop.domain.alert.AlertFeedbackPlayer
 import com.leonardovictormuller.napstop.domain.model.AlertConfig
 import com.leonardovictormuller.napstop.domain.model.GeoPoint
 import com.leonardovictormuller.napstop.domain.model.StopDestination
@@ -25,12 +26,13 @@ import kotlinx.coroutines.launch
  * - Depends ONLY on domain interfaces and pure use cases (no Android framework types stored).
  * - Exposes a single [StateFlow<HomeUiState>] consumed by the UI.
  * - Processes [HomeEvent]s to mutate state.
- * - Simulated speed (30 km/h) for the prototype; real GPS speed arrives in a future sprint.
+ * - Controls physical alerts through [AlertFeedbackPlayer].
  */
 class HomeViewModel(
     private val locationTracker: LocationTracker,
     private val calculateEtaUseCase: CalculateEtaUseCase,
     private val evaluateAlertTriggerUseCase: EvaluateAlertTriggerUseCase,
+    private val alertFeedbackPlayer: AlertFeedbackPlayer,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -38,8 +40,8 @@ class HomeViewModel(
 
     private var monitoringJob: Job? = null
 
-    // Simulated speed for the prototype phase
-    private val simulatedSpeedKmh = 30.0
+    // Fallback/reference speed in km/h for ETA calculations when speed is not available
+    private val defaultSpeedKmh = 30.0
 
     fun onEvent(event: HomeEvent) {
         when (event) {
@@ -109,10 +111,12 @@ class HomeViewModel(
             return
         }
 
-        monitoringJob?.cancel()
+        stopMonitoring()
+
         monitoringJob = viewModelScope.launch {
-            locationTracker.observeLocation()
+            locationTracker.observeLocation(intervalMs = 3_000L)
                 .catch { e ->
+                    alertFeedbackPlayer.stopAll()
                     _uiState.update {
                         it.copy(trackingState = TrackingState.Error("Erro de localização: ${e.message}"))
                     }
@@ -120,7 +124,7 @@ class HomeViewModel(
                 .collect { currentLocation ->
                     val currentTrackingState = _uiState.value.trackingState
 
-                    // Do not update terminal states
+                    // Terminal check
                     if (currentTrackingState is TrackingState.AlarmTriggered ||
                         currentTrackingState is TrackingState.Error
                     ) return@collect
@@ -128,7 +132,7 @@ class HomeViewModel(
                     val etaResult = calculateEtaUseCase(
                         current = currentLocation,
                         destination = destination.location,
-                        speedKmh = simulatedSpeedKmh,
+                        speedKmh = defaultSpeedKmh,
                     )
 
                     val baseState = if (currentTrackingState is TrackingState.Idle) {
@@ -147,6 +151,16 @@ class HomeViewModel(
                         config = alertConfig,
                     )
 
+                    if (nextState is TrackingState.AlarmTriggered &&
+                        currentTrackingState !is TrackingState.AlarmTriggered
+                    ) {
+                        alertFeedbackPlayer.triggerAlarm()
+                    } else if (nextState is TrackingState.VibrationTriggered &&
+                        currentTrackingState !is TrackingState.VibrationTriggered
+                    ) {
+                        alertFeedbackPlayer.triggerVibration()
+                    }
+
                     _uiState.update { it.copy(trackingState = nextState) }
                 }
         }
@@ -155,12 +169,14 @@ class HomeViewModel(
     private fun stopMonitoring() {
         monitoringJob?.cancel()
         monitoringJob = null
+        alertFeedbackPlayer.stopAll()
         _uiState.update { it.copy(trackingState = TrackingState.Idle) }
     }
 
     override fun onCleared() {
         super.onCleared()
         monitoringJob?.cancel()
+        alertFeedbackPlayer.stopAll()
     }
 
     /** Factory for manual DI wiring via [AppContainer]. */
@@ -172,6 +188,7 @@ class HomeViewModel(
                     locationTracker = container.locationTracker,
                     calculateEtaUseCase = container.calculateEtaUseCase,
                     evaluateAlertTriggerUseCase = container.evaluateAlertTriggerUseCase,
+                    alertFeedbackPlayer = container.alertFeedbackPlayer,
                 ) as T
             }
             throw IllegalArgumentException("Unknown ViewModel: ${modelClass.name}")

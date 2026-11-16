@@ -1,5 +1,9 @@
 package com.leonardovictormuller.napstop.ui.home
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,25 +19,32 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.leonardovictormuller.napstop.domain.model.TrackingState
+import kotlinx.coroutines.launch
 
 // Semantic test tags for E2E testing
 object HomeTestTags {
@@ -61,10 +72,51 @@ val defaultPresets = listOf(
     DestinationPreset("Estação Consolação", -23.5556, -46.6611),
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(viewModel: HomeViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Permission launcher for fine & coarse location
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissions ->
+        val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        val coarseLocationGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+        if (fineLocationGranted || coarseLocationGranted) {
+            viewModel.onEvent(HomeEvent.StartMonitoring)
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Permissão de localização é necessária para o monitoramento.")
+            }
+        }
+    }
+
+    fun requestLocationAndStart() {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (fineGranted || coarseGranted) {
+            viewModel.onEvent(HomeEvent.StartMonitoring)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                )
+            )
+        }
+    }
 
     // Show errors via Snackbar
     LaunchedEffect(uiState.errorMessage) {
@@ -74,10 +126,10 @@ fun HomeScreen(viewModel: HomeViewModel) {
         }
     }
 
-    androidx.compose.material3.Scaffold(
+    Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            androidx.compose.material3.TopAppBar(
+            TopAppBar(
                 title = { Text("NapStop 🛑") },
             )
         }
@@ -184,7 +236,7 @@ fun HomeScreen(viewModel: HomeViewModel) {
 
             if (!isMonitoring) {
                 Button(
-                    onClick = { viewModel.onEvent(HomeEvent.StartMonitoring) },
+                    onClick = { requestLocationAndStart() },
                     enabled = uiState.isStartEnabled,
                     modifier = Modifier
                         .fillMaxWidth()
